@@ -1,0 +1,60 @@
+@import "tailwindcss";
+
+/* Font packages — Corben loaded via CDN in index.html */
+@import "@fontsource-variable/dm-sans";
+@import "@fontsource/jetbrains-mono";
+
+@theme {
+  --font-sans: 'DM Sans Variable', system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', monospace;
+  --font-display: 'Corben', Georgia, serif;
+
+  --color-primary: #1A1A1A;
+  --color-primary-hover: #333333;
+  --color-primary-fg: #FFFFFF;
+  --color-maroon: #700c0c;
+  --color-maroon-hover: #8a1010;
+  --color-maroon-light: rgba(112, 12, 12, 0.06);
+  --color-maroon-border: rgba(112, 12, 12, 0.08);
+  --color-bg: #FFFFFF;
+  --color-bg-warm: #FAFAFA;
+  --color-surface: #FFFFFF;
+  --color-surface-muted: #F9FAFB;
+  --color-surface-subtle: #F3F4F6;
+  --color-surface-hover: #F3F4F6;
+  --color-border: #E5E7EB;
+  --color-border-soft: #F3F4F6;
+  --color-text: #1A1A1A;
+  --color-text-secondary: #4B5563;
+  --color-text-muted: #9CA3AF;
+  --color-text-dim: #D1D5DB;
+  --color-green: #059669;
+  --color-amber: #D97706;
+  --color-red: #DC2626;
+  --color-blue: #2563EB;
+  --color-purple: #7C3AED;
+  --color-orange: #EA580C;
+  --shadow-xs: 0 1px 2px rgba(0,0,0,0.04);
+  --shadow-sm: 0 1px 3px rgba(0,0,0,0.06);
+  --shadow-md: 0 4px 12px rgba(0,0,0,0.06);
+}
+
+html, body, #root { height: 100%; }
+body {
+  margin: 0;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+@layer base { * { font-family: inherit; } }
+
+h1, h2, h3 {
+  font-family: var(--font-display);
+  color: var(--color-text);
+}
+
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--color-text-dim); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--color-text-muted); }
