@@ -1,20 +1,18 @@
 from __future__ import annotations
-import logging
+
 import json
-from pathlib import Path
-import pymupdf
-import argparse
+import logging
 from collections import Counter, defaultdict
+from pathlib import Path
 from typing import Iterable
+
 import regex
 
 logger = logging.getLogger(__name__)
 
 Token = bytes
 MergeRule = tuple[Token, Token]
-Word = tuple[list[Token], int]
 
-# start with 256 single-byte tokens to prevent out of vocabulary in the tokenizer.
 BASE_ALPHABETS: list[Token] = [bytes([b]) for b in range(256)]
 PRE_TOKENIZATION_PATTERN = regex.compile(
     r"""'s|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
@@ -22,7 +20,6 @@ PRE_TOKENIZATION_PATTERN = regex.compile(
 
 
 class TinyTokenizer:
-
     def __init__(self, vocab_size: int = 1000) -> None:
         if vocab_size < 256:
             raise ValueError("vocab_size must be at least 256 (the base byte alphabet)")
@@ -44,10 +41,10 @@ class TinyTokenizer:
         instance.id_to_token = {i: t for t, i in instance.token_to_id.items()}
         return instance
 
-    def train_tokenizer(self, corpus):
+    def train_tokenizer(self, corpus: str) -> None:
         corpus_arr = self._pre_tokenize(corpus)
         corpus_freq = Counter(corpus_arr)
-        logging.info("Training on %d words (%d unique)", len(corpus_arr), len(corpus_freq))
+        logger.info("Training on %d words (%d unique)", len(corpus_arr), len(corpus_freq))
 
         word_splits: list[list[Token]] = [
             [bytes([b]) for b in word.encode("utf-8")] for word in corpus_freq
@@ -113,7 +110,6 @@ class TinyTokenizer:
         logger.info("Trained: %d merges, %d total tokens", len(self.merge_rules), len(self.token_to_id))
 
     def build_vocab(self) -> None:
-        """Assign integer IDs: 0-255 for base bytes, then merges in priority order."""
         self.token_to_id = {t: i for i, t in enumerate(BASE_ALPHABETS)}
         for a, b in self.merge_rules:
             merged = a + b
@@ -124,10 +120,8 @@ class TinyTokenizer:
     def save(self, path: str | Path) -> None:
         payload = {
             "vocab_size": self.vocab_size,
-            "merge_rules": [
-                [a.hex(), b.hex()] for a, b in self.merge_rules
-            ],
-            "vocab": {token.hex(): tid for token, tid in self.token_to_id.items()}
+            "merge_rules": [[a.hex(), b.hex()] for a, b in self.merge_rules],
+            "vocab": {token.hex(): tid for token, tid in self.token_to_id.items()},
         }
         Path(path).write_text(json.dumps(payload, ensure_ascii=False, indent=2))
 
@@ -143,17 +137,15 @@ class TinyTokenizer:
         return result
 
     def encode(self, text: str) -> list[int]:
-        """Convert text into a list of integer token IDs."""
         tokens = self.tokenize(text)
         return [self.token_to_id[token] for token in tokens if token in self.token_to_id]
 
     def decode(self, ids: Iterable[int]) -> str:
-        """Convert token IDs back into a string."""
         joined = b"".join(self.id_to_token[id] for id in ids if id in self.id_to_token)
         return joined.decode("utf-8", errors="replace")
 
     @staticmethod
-    def _pre_tokenize(corpus: str) -> list:
+    def _pre_tokenize(corpus: str) -> list[str]:
         return PRE_TOKENIZATION_PATTERN.findall(corpus)
 
     @staticmethod
@@ -162,7 +154,7 @@ class TinyTokenizer:
         i, n = 0, len(tokens)
         new_tokens: list[Token] = []
         while i < n:
-            if i < n - 1 and (tokens[i] == a and tokens[i + 1] == b):
+            if i < n - 1 and tokens[i] == a and tokens[i + 1] == b:
                 new_tokens.append(a + b)
                 i += 2
             else:
@@ -171,58 +163,9 @@ class TinyTokenizer:
         return new_tokens
 
 
-def _is_valid_utf8(b: bytes) -> bool:
+def is_valid_utf8(b: bytes) -> bool:
     try:
         b.decode("utf-8")
         return True
     except UnicodeDecodeError:
         return False
-
-
-def load_pdf_corpus(path: str | Path) -> str:
-    pages: list[str] = []
-    with pymupdf.open(path) as doc:
-        for page in doc:
-            pages.append(page.get_text().replace("\n", " "))
-    return "\n".join(pages)
-
-
-def main():
-    parser = argparse.ArgumentParser(description="TinyTokenizer — train or encode")
-    parser.add_argument("text", help="Text to encode after training")
-    parser.add_argument("--corpus", default="template.pdf", help="Path to PDF training corpus")
-    parser.add_argument("--vocab-size", type=int, default=512, help="Target vocab size")
-    parser.add_argument("--save", help="Save trained tokenizer to this path")
-    parser.add_argument("--load", help="Load tokenizer from this path instead of training")
-    parser.add_argument("--verbose", "-v", action="store_true")
-    args = parser.parse_args()
-
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(levelname)s: %(message)s",
-    )
-
-    if args.load:
-        tokenizer = TinyTokenizer.load(args.load)
-    else:
-        corpus = load_pdf_corpus(args.corpus)
-        tokenizer = TinyTokenizer(vocab_size=args.vocab_size)
-        tokenizer.train_tokenizer(corpus)
-        if args.save:
-            tokenizer.save(args.save)
-
-    tokens = tokenizer.tokenize(args.text)
-    ids = tokenizer.encode(args.text)
-    decoded = tokenizer.decode(ids)
-    display = [
-        t.decode("utf-8") if _is_valid_utf8(t) else t.hex()
-        for t in tokens
-    ]
-    print(f"tokens ({len(tokens)}): {display}")
-    print(f"ids:    {ids}")
-    print(f"decoded: {decoded!r}")
-    print(f"roundtrip ok: {decoded == args.text}")
-
-
-if __name__ == "__main__":
-    main()
