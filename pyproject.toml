@@ -23,6 +23,8 @@ dependencies = [
     "itsdangerous>=2.2.0",
     "prometheus-client>=0.21.0",
     "httpx>=0.27.0",
+    # tokenizer adapters
+    "tiktoken>=0.8.0",
 ]
 
 [project.scripts]
