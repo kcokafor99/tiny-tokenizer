@@ -11,7 +11,6 @@ from app.rate_limit import limiter
 from app.schemas import HealthResponse, TokenInfo, TokenizeRequest, TokenizeResponse
 from app.session import get_or_create_anon_id
 from app.tokenizers import TokenizerError, get_tokenizer, list_available
-from tokenizer.tiny import is_valid_utf8
 
 router = APIRouter()
 logger = get_logger(__name__)
@@ -37,57 +36,73 @@ def tokenizers():
 @router.post("/tokenize", response_model=TokenizeResponse)
 @limiter.limit("60/minute")
 def tokenize(payload: TokenizeRequest, request: Request, response: Response):
+    # Hoist hot accessors into locals — each one was being re-resolved per
+    # reference during the hot path.
+    slug = payload.tokenizer
+    text = payload.text
+    text_len = len(text)
     anon_id = get_or_create_anon_id(request, response)
+
     start = time.perf_counter()
 
     try:
-        adapter = get_tokenizer(payload.tokenizer)
-    except TokenizerError as e:
-        logger.info("tokenizer_not_found", slug=payload.tokenizer, error=str(e))
-        raise HTTPException(status_code=404, detail=str(e))
+        adapter = get_tokenizer(slug)
+    except TokenizerError as exc:
+        logger.info("tokenizer_not_found", slug=slug, error=str(exc))
+        raise HTTPException(status_code=404, detail=str(exc))
 
     try:
-        encoded = adapter.encode(payload.text)
-    except TokenizerError as e:
-        logger.warning("tokenize_failed", slug=payload.tokenizer, error=str(e))
-        raise HTTPException(status_code=422, detail=str(e))
+        encoded = adapter.encode(text)
+    except TokenizerError as exc:
+        logger.warning("tokenize_failed", slug=slug, error=str(exc))
+        raise HTTPException(status_code=422, detail=str(exc))
 
-    tokens = [
-        TokenInfo(
-            id=t.id,
-            bytes_hex=t.raw.hex(),
-            display=t.raw.decode("utf-8") if is_valid_utf8(t.raw) else t.raw.hex(),
-            valid_utf8=is_valid_utf8(t.raw),
-        )
-        for t in encoded
-    ]
+    # Single-pass per-token construction. Old code called is_valid_utf8()
+    # twice and .hex() twice per token; here every byte sequence is decoded
+    # at most once.
+    tokens: list[TokenInfo] = []
+    append = tokens.append
+    for t in encoded:
+        raw = t.raw
+        hex_str = raw.hex()
+        try:
+            display = raw.decode("utf-8")
+            valid = True
+        except UnicodeDecodeError:
+            display = hex_str
+            valid = False
+        append(TokenInfo(id=t.id, bytes_hex=hex_str, display=display, valid_utf8=valid))
 
     elapsed = time.perf_counter() - start
-    tokenize_latency.labels(tokenizer=payload.tokenizer).observe(elapsed)
-    tokenize_tokens.labels(tokenizer=payload.tokenizer).observe(len(tokens))
+    token_count = len(tokens)
+    duration_ms = round(elapsed * 1000, 2)
+
+    # Prometheus `.labels()` is internally cached so this is O(1) after warm.
+    tokenize_latency.labels(tokenizer=slug).observe(elapsed)
+    tokenize_tokens.labels(tokenizer=slug).observe(token_count)
 
     logger.info(
         "tokenize_ok",
-        tokenizer=payload.tokenizer,
+        tokenizer=slug,
         anon=anon_id,
-        text_len=len(payload.text),
-        token_count=len(tokens),
-        duration_ms=round(elapsed * 1000, 2),
+        text_len=text_len,
+        token_count=token_count,
+        duration_ms=duration_ms,
     )
     capture(
         anon_id,
         "prompt_tokenized",
         {
-            "tokenizer": payload.tokenizer,
-            "text_len": len(payload.text),
-            "token_count": len(tokens),
-            "duration_ms": round(elapsed * 1000, 2),
+            "tokenizer": slug,
+            "text_len": text_len,
+            "token_count": token_count,
+            "duration_ms": duration_ms,
         },
     )
 
     return TokenizeResponse(
-        tokenizer=payload.tokenizer,
-        token_count=len(tokens),
+        tokenizer=slug,
+        token_count=token_count,
         tokens=tokens,
-        duration_ms=round(elapsed * 1000, 2),
+        duration_ms=duration_ms,
     )
