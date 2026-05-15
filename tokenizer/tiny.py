@@ -18,6 +18,11 @@ PRE_TOKENIZATION_PATTERN = regex.compile(
     r"""'s|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
 )
 
+# Real text repeats the same words constantly — caching per pre-tokenized
+# word turns nearly all repeat calls into a single dict lookup. Bounded to
+# avoid unbounded memory growth in a long-running process.
+_WORD_CACHE_MAX = 4096
+
 
 class TinyTokenizer:
     def __init__(self, vocab_size: int = 1000) -> None:
@@ -27,6 +32,12 @@ class TinyTokenizer:
         self.merge_rules: list[MergeRule] = []
         self.id_to_token: dict[int, Token] = {}
         self.token_to_id: dict[Token, int] = {}
+        # Fast encode-path lookups (rebuilt by build_vocab / load):
+        #   _merge_table[(left_id, right_id)] = (rank, merged_id)
+        # Lower rank = applied earlier. Using ints (not bytes) avoids per-step
+        # allocation and uses faster integer hashing in tight loops.
+        self._merge_table: dict[tuple[int, int], tuple[int, int]] = {}
+        self._word_cache: dict[bytes, tuple[int, ...]] = {}
 
     @classmethod
     def load(cls, path: str | Path) -> "TinyTokenizer":
@@ -39,6 +50,7 @@ class TinyTokenizer:
             bytes.fromhex(hex_token): tid for hex_token, tid in payload["vocab"].items()
         }
         instance.id_to_token = {i: t for t, i in instance.token_to_id.items()}
+        instance._build_fast_lookups()
         return instance
 
     def train_tokenizer(self, corpus: str) -> None:
@@ -116,6 +128,7 @@ class TinyTokenizer:
             if merged not in self.token_to_id:
                 self.token_to_id[merged] = len(self.token_to_id)
         self.id_to_token = {i: t for t, i in self.token_to_id.items()}
+        self._build_fast_lookups()
 
     def save(self, path: str | Path) -> None:
         payload = {
@@ -125,42 +138,101 @@ class TinyTokenizer:
         }
         Path(path).write_text(json.dumps(payload, ensure_ascii=False, indent=2))
 
-    def tokenize(self, text: str) -> list[Token]:
-        if not self.merge_rules or not self.token_to_id:
+    def encode(self, text: str) -> list[int]:
+        """Convert text into a list of integer token IDs (the fast path)."""
+        if not self._merge_table and not self.merge_rules:
             raise RuntimeError("Tokenizer has not been trained or loaded")
-        result: list[Token] = []
-        for word in self._pre_tokenize(text):
-            tokens = [bytes([b]) for b in word.encode("utf-8")]
-            for pair in self.merge_rules:
-                tokens = self._apply_merge(tokens, pair)
-            result.extend(tokens)
+        result: list[int] = []
+        extend = result.extend
+        cache = self._word_cache
+        cache_get = cache.get
+        bpe_encode_word = self._bpe_encode_word
+        cache_max = _WORD_CACHE_MAX
+        findall = PRE_TOKENIZATION_PATTERN.findall
+        for word in findall(text):
+            word_bytes = word.encode("utf-8")
+            ids = cache_get(word_bytes)
+            if ids is None:
+                ids = bpe_encode_word(word_bytes)
+                if len(cache) < cache_max:
+                    cache[word_bytes] = ids
+            extend(ids)
         return result
 
-    def encode(self, text: str) -> list[int]:
-        tokens = self.tokenize(text)
-        return [self.token_to_id[token] for token in tokens if token in self.token_to_id]
+    def tokenize(self, text: str) -> list[Token]:
+        """Bytes-level view of the token sequence. Built on top of encode()."""
+        id_to_token = self.id_to_token
+        return [id_to_token[tid] for tid in self.encode(text)]
 
     def decode(self, ids: Iterable[int]) -> str:
-        joined = b"".join(self.id_to_token[id] for id in ids if id in self.id_to_token)
+        id_to_token = self.id_to_token
+        joined = b"".join(id_to_token[tid] for tid in ids if tid in id_to_token)
         return joined.decode("utf-8", errors="replace")
+
+    # ---------- internals ----------
+
+    def _build_fast_lookups(self) -> None:
+        """Build the int-keyed merge table that powers _bpe_encode_word."""
+        table: dict[tuple[int, int], tuple[int, int]] = {}
+        token_to_id = self.token_to_id
+        for rank, (a, b) in enumerate(self.merge_rules):
+            table[(token_to_id[a], token_to_id[b])] = (rank, token_to_id[a + b])
+        self._merge_table = table
+        self._word_cache.clear()
+
+    def _bpe_encode_word(self, word_bytes: bytes) -> tuple[int, ...]:
+        """
+        Encode one pre-tokenized word's bytes using the lowest-rank-first BPE
+        algorithm.
+
+        At each step we scan the current sequence once to find the highest-
+        priority mergeable pair (lowest rank), apply that single merge, and
+        repeat. This is O(W²) per word in the worst case — but W is small
+        because pre-tokenization splits on word boundaries, and the constant
+        factor is small (integer compares, no bytes allocation, no method
+        dispatch). The old code did O(M × W) Python-level loops per word,
+        where M was the merge-rule count regardless of how many actually fired.
+        """
+        n = len(word_bytes)
+        if n == 0:
+            return ()
+        if n == 1:
+            return (word_bytes[0],)  # base alphabet: each byte's value is its token ID
+
+        # Each byte is its own base-alphabet token ID (0–255).
+        ids: list[int] = list(word_bytes)
+        table_get = self._merge_table.get
+        # Sentinel rank larger than any real rank ⇒ eliminates the
+        # `best_rank is None or rank < best_rank` branch (the `is None` check
+        # runs every iteration of the inner scan otherwise).
+        SENTINEL_RANK = 1 << 62
+
+        while True:
+            best_rank = SENTINEL_RANK
+            best_pos = -1
+            best_merged = -1
+            last = len(ids) - 1
+            for i in range(last):
+                entry = table_get((ids[i], ids[i + 1]))
+                if entry is not None and entry[0] < best_rank:
+                    best_rank = entry[0]
+                    best_pos = i
+                    best_merged = entry[1]
+                    if best_rank == 0:
+                        # Rank 0 is the highest priority — nothing can beat it.
+                        break
+            if best_pos == -1:
+                break
+            # Slice assignment is one C-level memmove vs the previous
+            # `ids[k] = v` followed by `del ids[k+1]` (two operations).
+            ids[best_pos : best_pos + 2] = (best_merged,)
+            if len(ids) == 1:
+                break
+        return tuple(ids)
 
     @staticmethod
     def _pre_tokenize(corpus: str) -> list[str]:
         return PRE_TOKENIZATION_PATTERN.findall(corpus)
-
-    @staticmethod
-    def _apply_merge(tokens: list[Token], pair: MergeRule) -> list[Token]:
-        a, b = pair
-        i, n = 0, len(tokens)
-        new_tokens: list[Token] = []
-        while i < n:
-            if i < n - 1 and tokens[i] == a and tokens[i + 1] == b:
-                new_tokens.append(a + b)
-                i += 2
-            else:
-                new_tokens.append(tokens[i])
-                i += 1
-        return new_tokens
 
 
 def is_valid_utf8(b: bytes) -> bool:
