@@ -7,7 +7,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 
 from app.config import get_settings
-from app.errors import install_exception_handlers
+from app.errors import register_exception_handlers
 from app.logging_setup import configure_logging, get_logger
 from app.middleware import RequestLoggingMiddleware, SecurityHeadersMiddleware
 from app.rate_limit import limiter
@@ -30,7 +30,7 @@ def create_app() -> FastAPI:
     # Order matters — outermost added last.
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
-    install_exception_handlers(app)
+    register_exception_handlers(app)
 
     app.add_middleware(SlowAPIMiddleware)
     app.add_middleware(SecurityHeadersMiddleware)

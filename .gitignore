@@ -196,12 +196,11 @@ node_modules/
 .cache/
 .parcel-cache/
 
-# Env files — never commit secrets
+# Env files — never commit (including templates; we document env vars in README)
 .env
-.env.local
-.env.*.local
-.env.production
-.env.development
+.env.*
+.env.example
+.env.template
 
 # Local trained tokenizer artifacts (the example one in tokenizer/data/ is committed)
 /*.tok.json

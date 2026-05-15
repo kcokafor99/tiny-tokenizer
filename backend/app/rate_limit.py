@@ -7,7 +7,7 @@ from slowapi.util import get_remote_address
 from app.config import get_settings
 
 
-def _anon_key(request: Request) -> str:
+def _build_rate_limit_key(request: Request) -> str:
     """
     Rate-limit by signed session cookie if present, falling back to IP.
     Avoids the cookie being unset on first request leaking through as
@@ -21,7 +21,7 @@ def _anon_key(request: Request) -> str:
 
 
 limiter = Limiter(
-    key_func=_anon_key,
+    key_func=_build_rate_limit_key,
     default_limits=[f"{get_settings().rate_limit_per_minute}/minute"],
     headers_enabled=True,
 )

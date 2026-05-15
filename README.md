@@ -76,14 +76,37 @@ python -m tokenizer.cli "your text here" --vocab-size 2048 --save tokenizer/data
 
 ## Environment
 
-Copy the templates and fill in what you need:
+All env files (`.env`, `.env.local`, `.env.example`, etc.) are gitignored.
+Create the ones you need locally — every variable is optional in dev. The
+canonical reference for each setting is the corresponding config module
+([`backend/app/config.py`](backend/app/config.py),
+[`frontend/src/lib/env.ts`](frontend/src/lib/env.ts)).
 
-```bash
-cp backend/.env.example backend/.env
-cp frontend/.env.example frontend/.env.local
-```
+### `backend/.env` (read by `pydantic-settings`)
 
-Closed-tokenizer endpoints (Anthropic, Gemini) are disabled when their API keys are blank.
+| Variable | Default | Purpose |
+|---|---|---|
+| `ENV` | `development` | `development` \| `staging` \| `production` |
+| `LOG_LEVEL` | `INFO` | structlog level |
+| `ALLOWED_ORIGINS` | `["http://localhost:5173","http://127.0.0.1:5173"]` | CORS allowlist (JSON array) |
+| `SESSION_SECRET` | dev-only string | sign anonymous session cookies — set a strong value in prod (`python -c "import secrets; print(secrets.token_urlsafe(48))"`) |
+| `COOKIE_NAME` | `tt_session` | session cookie name |
+| `COOKIE_SECURE` | `false` | set to `true` in prod (HTTPS) |
+| `MAX_PROMPT_CHARS` | `100000` | hard cap on `/tokenize` input length |
+| `RATE_LIMIT_PER_MINUTE` | `100` | default rate-limit ceiling |
+| `ANTHROPIC_API_KEY` | _(blank)_ | enables Anthropic count_tokens proxy when set |
+| `GEMINI_API_KEY` | _(blank)_ | enables Gemini token count proxy when set |
+| `PAID_COUNT_DAILY_CAP` | `10000` | daily safety cap on paid `count_tokens` calls |
+| `POSTHOG_API_KEY` | _(blank)_ | enables server-side PostHog when set |
+| `POSTHOG_HOST` | `https://us.i.posthog.com` | PostHog ingest host |
+
+### `frontend/.env.local` (Vite, only `VITE_` vars reach the browser)
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `VITE_API_BASE_URL` | `http://127.0.0.1:8765` | backend URL |
+| `VITE_POSTHOG_KEY` | _(blank)_ | enables client-side PostHog when set |
+| `VITE_POSTHOG_HOST` | `https://us.i.posthog.com` | PostHog ingest host |
 
 ## Pre-commit hooks
 
