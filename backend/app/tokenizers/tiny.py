@@ -11,7 +11,7 @@ logger = get_logger(__name__)
 
 class TinyAdapter:
     slug = "tiny"
-    label = "TinyTokenizer (this project)"
+    label = "TinyTokenizer"
 
     def __init__(self, model_path: Path) -> None:
         if not model_path.exists():
