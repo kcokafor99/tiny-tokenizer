@@ -29,13 +29,8 @@ class TinyAdapter:
 
     def encode(self, text: str) -> list[EncodedToken]:
         try:
-            raw_tokens = self._model.tokenize(text)
+            ids = self._model.encode(text)
         except Exception as e:
             raise TokenizerError(f"TinyTokenizer encode failed: {e}") from e
-        out: list[EncodedToken] = []
-        for tok in raw_tokens:
-            tok_id = self._model.token_to_id.get(tok)
-            if tok_id is None:
-                raise TokenizerError(f"Token {tok!r} not in vocab")
-            out.append(EncodedToken(id=tok_id, raw=tok))
-        return out
+        id_to_token = self._model.id_to_token
+        return [EncodedToken(id=tid, raw=id_to_token[tid]) for tid in ids]
