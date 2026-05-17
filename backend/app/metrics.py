@@ -29,6 +29,20 @@ paid_calls_total = Counter(
     ["provider", "outcome"],
 )
 
+# Per-word LRU cache effectiveness inside encode(). Used to tune the
+# adapter's cache cap from observed hit rate.
+word_cache_hits_total = Counter(
+    "tt_word_cache_hits_total",
+    "Cumulative tokenizer word-cache hits",
+    ["tokenizer"],
+)
+
+word_cache_misses_total = Counter(
+    "tt_word_cache_misses_total",
+    "Cumulative tokenizer word-cache misses",
+    ["tokenizer"],
+)
+
 
 def metrics_response() -> Response:
     return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)

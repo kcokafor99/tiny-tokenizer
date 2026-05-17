@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections import Counter, defaultdict
+from collections import Counter, OrderedDict, defaultdict
 from pathlib import Path
 from typing import Iterable
 
@@ -18,9 +18,11 @@ PRE_TOKENIZATION_PATTERN = regex.compile(
     r"""'s|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
 )
 
-# Real text repeats the same words constantly — caching per pre-tokenized
-# word turns nearly all repeat calls into a single dict lookup. Bounded to
-# avoid unbounded memory growth in a long-running process.
+# LRU cap for the per-word encode cache. Provisional — picked because it
+# comfortably exceeds the working vocabulary of a typical single prompt
+# while keeping memory under ~1 MB. Not yet tuned from real workloads; the
+# `tt_word_cache_hits_total` / `_misses_total` metrics exposed by the
+# backend exist so this can be set from data once we have any.
 _WORD_CACHE_MAX = 4096
 
 
@@ -37,7 +39,12 @@ class TinyTokenizer:
         # Lower rank = applied earlier. Using ints (not bytes) avoids per-step
         # allocation and uses faster integer hashing in tight loops.
         self._merge_table: dict[tuple[int, int], tuple[int, int]] = {}
-        self._word_cache: dict[bytes, tuple[int, ...]] = {}
+        # LRU word cache: hit ⇒ move_to_end; overflow ⇒ popitem(last=False).
+        self._word_cache: OrderedDict[bytes, tuple[int, ...]] = OrderedDict()
+        # Cumulative hit/miss counters. The backend adapter reads these and
+        # reports deltas to Prometheus so the cap can be tuned from data.
+        self._cache_hits = 0
+        self._cache_misses = 0
 
     @classmethod
     def load(cls, path: str | Path) -> "TinyTokenizer":
@@ -146,18 +153,37 @@ class TinyTokenizer:
         extend = result.extend
         cache = self._word_cache
         cache_get = cache.get
+        move_to_end = cache.move_to_end
+        popitem = cache.popitem
         bpe_encode_word = self._bpe_encode_word
         cache_max = _WORD_CACHE_MAX
         findall = PRE_TOKENIZATION_PATTERN.findall
-        for word in findall(text):
-            word_bytes = word.encode("utf-8")
-            ids = cache_get(word_bytes)
-            if ids is None:
-                ids = bpe_encode_word(word_bytes)
-                if len(cache) < cache_max:
+        hits_delta = 0
+        misses_delta = 0
+        try:
+            for word in findall(text):
+                word_bytes = word.encode("utf-8")
+                ids = cache_get(word_bytes)
+                if ids is not None:
+                    move_to_end(word_bytes)
+                    hits_delta += 1
+                else:
+                    ids = bpe_encode_word(word_bytes)
                     cache[word_bytes] = ids
-            extend(ids)
+                    if len(cache) > cache_max:
+                        popitem(last=False)
+                    misses_delta += 1
+                extend(ids)
+        finally:
+            # try/finally so the counters stay consistent even if a downstream
+            # exception interrupts the loop.
+            self._cache_hits += hits_delta
+            self._cache_misses += misses_delta
         return result
+
+    def cache_stats(self) -> tuple[int, int]:
+        """Return cumulative (hits, misses). Reset by build_vocab / load."""
+        return self._cache_hits, self._cache_misses
 
     def tokenize(self, text: str) -> list[Token]:
         """Bytes-level view of the token sequence. Built on top of encode()."""
@@ -179,6 +205,8 @@ class TinyTokenizer:
             table[(token_to_id[a], token_to_id[b])] = (rank, token_to_id[a + b])
         self._merge_table = table
         self._word_cache.clear()
+        self._cache_hits = 0
+        self._cache_misses = 0
 
     def _bpe_encode_word(self, word_bytes: bytes) -> tuple[int, ...]:
         """
