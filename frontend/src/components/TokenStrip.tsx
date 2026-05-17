@@ -12,10 +12,13 @@ const PALETTE = [
 
 function displayChar(t: TokenInfo) {
   if (!t.valid_utf8) return `\\x${t.bytes_hex}`
-  if (t.display === " ") return "·"
-  if (t.display === "\n") return "↵"
-  if (t.display === "\t") return "→"
+  // Replace every whitespace character with a visible glyph, not just
+  // tokens whose entire display is one whitespace char — most BPE outputs
+  // have whitespace as a prefix (e.g. " iberibe") which HTML collapses.
   return t.display
+    .replaceAll(" ", "·")
+    .replaceAll("\n", "↵")
+    .replaceAll("\t", "→")
 }
 
 export function TokenStrip({ tokens }: { tokens: TokenInfo[] }) {

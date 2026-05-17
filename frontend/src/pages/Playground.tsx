@@ -105,6 +105,15 @@ export function Playground() {
             <span>{result.duration_ms} ms</span>
           </div>
           <TokenStrip tokens={result.tokens} />
+
+          <details className="mt-2" open>
+            <summary className="cursor-pointer text-xs uppercase tracking-wide text-[var(--color-text-muted)]">
+              Token IDs
+            </summary>
+            <pre className="mt-2 max-h-48 overflow-auto rounded-md border border-[var(--color-border-soft)] bg-[var(--color-surface-subtle)] p-3 font-mono text-xs leading-relaxed text-[var(--color-text)]">
+              {result.tokens.map((t) => t.id).join(", ")}
+            </pre>
+          </details>
         </section>
       )}
     </div>
